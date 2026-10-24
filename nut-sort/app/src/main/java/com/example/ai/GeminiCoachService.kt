@@ -1,0 +1,123 @@
+package com.example.ai
+
+import com.example.BuildConfig
+import com.example.model.GameState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+object GeminiCoachService {
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Calls gemini-3.1-pro-preview with thinkingLevel HIGH to analyze the puzzle
+     * and provide insightful strategic guidance to the player.
+     */
+    suspend fun askPuzzleCoach(gameState: GameState): Result<String> = withContext(Dispatchers.IO) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+            return@withContext Result.failure(
+                IllegalStateException("Gemini API key is not configured. Please add your key to the Secrets panel.")
+            )
+        }
+
+        // Format game state into description for high thinking model
+        val boardDescription = buildString {
+            appendLine("Ball Sorting Game - Difficulty: ${gameState.difficulty.title}, Level: ${gameState.level}")
+            appendLine("Total Tubes: ${gameState.tubes.size}, Tube Capacity: ${gameState.difficulty.capacity}")
+            if (gameState.isChallengeLevel) {
+                appendLine("Special Challenge: Mystery Balls active (some lower balls have hidden colors)")
+            }
+            appendLine("Current Tube Status:")
+            gameState.tubes.forEachIndexed { index, tube ->
+                val ballsStr = if (tube.balls.isEmpty()) {
+                    "[Empty]"
+                } else {
+                    tube.balls.joinToString(separator = ", ") { ball ->
+                        if (ball.isHidden) "Mystery(?)" else ball.color.displayName
+                    }
+                }
+                appendLine("Tube #${index + 1}: $ballsStr (Capacity: ${tube.balls.size}/${tube.capacity})")
+            }
+        }
+
+        val prompt = """
+            You are the Grandmaster Ball Sorting Puzzle Strategist.
+            Analyze this puzzle state:
+            $boardDescription
+
+            Provide:
+            1. An incisive assessment of the current board (bottlenecks, open spaces, priorities).
+            2. The single best next strategic move (Which tube to pick from and which tube to move to, and why).
+            3. A pro tip to avoid deadlock.
+            Keep your response concise, encouraging, and clear (max 3-4 bullet points).
+        """.trimIndent()
+
+        val jsonBody = JSONObject().apply {
+            val contentsArray = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("text", prompt)
+                        })
+                    })
+                })
+            }
+            put("contents", contentsArray)
+
+            // Thinking mode configuration using gemini-3.1-pro-preview with HIGH thinking level
+            val generationConfig = JSONObject().apply {
+                val thinkingConfig = JSONObject().apply {
+                    put("thinkingLevel", "HIGH")
+                }
+                put("thinkingConfig", thinkingConfig)
+            }
+            put("generationConfig", generationConfig)
+        }
+
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=$apiKey"
+        val requestBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
+
+        try {
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(
+                    Exception("Gemini API error ${response.code}: $responseBody")
+                )
+            }
+
+            val jsonResponse = JSONObject(responseBody)
+            val candidates = jsonResponse.optJSONArray("candidates")
+            val firstCandidate = candidates?.optJSONObject(0)
+            val content = firstCandidate?.optJSONObject("content")
+            val parts = content?.optJSONArray("parts")
+            val text = parts?.optJSONObject(0)?.optString("text")
+
+            if (!text.isNullOrBlank()) {
+                Result.success(text)
+            } else {
+                Result.failure(Exception("No explanation generated by AI."))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}

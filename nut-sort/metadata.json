@@ -1,0 +1,6 @@
+{
+  "name": "BALL SORT",
+  "description": "Ball Sort Puzzle game with realistic glossy glass marble physics, transparent test tubes, celebratory confetti bursts, 3 difficulty settings, and infinite procedural levels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
